@@ -1,0 +1,100 @@
+{
+  "meta": {
+    "label": "Spec Decomposer",
+    "description": "Decomposes specifications using Cortex Search Service for document retrieval and LLM-based analysis",
+    "icon": "fas fa-puzzle-piece"
+  },
+
+  "kind": "PYTHON",
+
+  "params": [
+    {
+      "name": "snowflake_connection",
+      "label": "Snowflake Connection",
+      "description": "Connection must have access to the Cortex Search service specified in the cortex log dataset",
+      "type": "CONNECTION",
+      "mandatory": true
+    },
+    {
+      "name": "llmID",
+      "label": "LLM ID",
+      "description": "The LLM ID to use for all agents (e.g., azureopenai:Azure-OpenAI-Prod-4-1:gpt-5-chat)",
+      "type": "STRING",
+      "mandatory": true
+    },
+    {
+      "name": "basestore_paths",
+      "label": "Document Names",
+      "description": "Array of document name prefixes used to categorize files as 'baseStore'. These should match DOCUMENT_NAME values from the Cortex Search Service.",
+      "type": "STRINGS",
+      "mandatory": true
+    },
+    {
+      "name": "other_priorities_paths",
+      "label": "Optional Documents",
+      "description": "Array of optional document name prefixes used to categorize files as 'other-priorities'. These files are searchable but not processed through the main extraction pipeline.",
+      "type": "STRINGS",
+      "mandatory": false
+    },
+    {
+      "name": "document_name_column",
+      "label": "Document Name Column",
+      "description": "Column name in the input dataset that contains the document name (e.g., 'DOCUMENT_NAME')",
+      "type": "STRING",
+      "mandatory": true
+    },
+    {
+      "name": "page_number_column",
+      "label": "Page Number Column",
+      "description": "Column name in the input dataset that contains the page number (e.g., 'PAGE_NUMBER')",
+      "type": "STRING",
+      "mandatory": true
+    },
+    {
+      "name": "content_column",
+      "label": "Content Column",
+      "description": "Column name in the input dataset that contains the page content/text (e.g., 'llm_output')",
+      "type": "STRING",
+      "mandatory": true
+    }
+  ],
+
+  "inputRoles": [
+    {
+      "name": "data_collection_folder",
+      "label": "Data Collection Folder",
+      "description": "Folder for storing and retrieving intermediate data collection files",
+      "arity": "EXACTLY_ONE",
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    },
+    {
+      "name": "specs_llm_text_files_dataset",
+      "label": "Specs LLM Text Files Dataset",
+      "description": "Dataset containing specification text content with columns for document name, page number, and content",
+      "arity": "EXACTLY_ONE",
+      "acceptsDataset": true,
+      "acceptsManagedFolder": false
+    },
+    {
+      "name": "cortex_log_dataset",
+      "label": "Cortex Search Log Dataset",
+      "description": "Dataset containing Cortex Search Service configuration (service_fqn, on_column_alias, attribute_aliases)",
+      "arity": "EXACTLY_ONE",
+      "acceptsDataset": true
+    }
+  ],
+
+  "outputRoles": [
+    {
+      "name": "multi_agent_output_folder",
+      "label": "Multi-Agent Output Folder",
+      "description": "Output folder for generated modules, parameters, and rules",
+      "arity": "EXACTLY_ONE",
+      "acceptsDataset": false,
+      "acceptsManagedFolder": true
+    }
+  ],
+
+  "resourceKeys": []
+}
