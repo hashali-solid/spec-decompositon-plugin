@@ -72,6 +72,7 @@ from datetime import datetime
 from uuid import uuid4
 from copy import deepcopy
 import re
+import logging
 
 # Typing
 from typing import Annotated, Literal, Sequence, List, Any, Dict
@@ -153,6 +154,14 @@ from langgraph.prebuilt import tools_condition
 # ### Config Values
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+# Configure logging to reduce Snowflake SDK verbosity
+# This reduces the amount of document content logged by Snowflake SDK debug logs
+logging.getLogger('snowflake').setLevel(logging.WARNING)
+logging.getLogger('snowflake.core').setLevel(logging.WARNING)
+logging.getLogger('snowflake.connector').setLevel(logging.WARNING)
+logging.getLogger('snowflake.core.cortex').setLevel(logging.WARNING)
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
 def unique_filename():
     """
     Generate a unique timestamp-based filename identifier.
@@ -171,18 +180,50 @@ def unique_filename():
     return f"{timestamp}"
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
-def invoke_with_rate_limit_retry(chain, input_data, max_retries=5, base_delay=2):
+def truncate_text_for_log(text, max_length=100, show_start_end=True):
+    """
+    Truncate text for logging to reduce log file size.
+    
+    Shows first and last portions of text with ellipsis in between,
+    making it easy to verify against the original document.
+    
+    Args:
+        text: Text to truncate
+        max_length: Maximum length of each portion (start/end) to show
+        show_start_end: If True, show both start and end; if False, just show start
+    
+    Returns:
+        Truncated text string suitable for logging
+    """
+    if not text or not isinstance(text, str):
+        return str(text)
+    
+    text_len = len(text)
+    if text_len <= max_length * 2 + 20:  # If text is short, return as-is
+        return text
+    
+    if show_start_end:
+        start = text[:max_length].strip()
+        end = text[-max_length:].strip()
+        return f"{start}... [truncated {text_len - max_length * 2} chars] ...{end}"
+    else:
+        return f"{text[:max_length]}... [truncated {text_len - max_length} chars]"
+
+# -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
+def invoke_with_rate_limit_retry(chain, input_data, max_retries=15, base_delay=2, max_wait_time=120):
     """
     Invoke LLM chain with rate limit error handling.
     
     Handles HTTP 429 errors by parsing retry-after times and implementing
-    exponential backoff with rate limit awareness.
+    exponential backoff with rate limit awareness. Designed to handle concurrent
+    workers hitting rate limits simultaneously.
     
     Args:
         chain: LangChain runnable chain to invoke
         input_data: Input data to pass to the chain
-        max_retries: Maximum number of retry attempts (default: 5)
+        max_retries: Maximum number of retry attempts (default: 15, increased for concurrent scenarios)
         base_delay: Base delay in seconds for exponential backoff (default: 2)
+        max_wait_time: Maximum wait time in seconds per retry (default: 120, caps exponential growth)
     
     Returns:
         Result from chain.invoke() if successful
@@ -201,27 +242,65 @@ def invoke_with_rate_limit_retry(chain, input_data, max_retries=5, base_delay=2)
             return chain.invoke(input_data)
         except Exception as e:
             error_str = str(e)
+            # Also check exception args and repr for nested error messages
+            error_repr = repr(e)
             
-            # Check for rate limit error
-            if "HTTP code: 429" in error_str or "RateLimitReached" in error_str:
-                # Parse retry-after time from error message
-                retry_match = re.search(r"retry after (\d+) seconds?", error_str, re.IGNORECASE)
-                if retry_match:
-                    retry_after = int(retry_match.group(1))
-                else:
-                    retry_after = base_delay
+            # Check for rate limit error - check multiple formats
+            is_rate_limit = (
+                "HTTP code: 429" in error_str or 
+                "RateLimitReached" in error_str or
+                "429" in error_str or
+                "rate limit" in error_str.lower() or
+                "HTTP code: 429" in error_repr or
+                "RateLimitReached" in error_repr
+            )
+            
+            # Check for null response errors (transient API/network issues)
+            is_null_response = (
+                ("response" in error_str.lower() and "null" in error_str.lower()) or
+                ("Cannot read field" in error_str and "response" in error_str.lower() and "null" in error_str.lower()) or
+                ("response" in error_repr.lower() and "null" in error_repr.lower())
+            )
+            
+            # Retry on rate limits or null response errors
+            if is_rate_limit or is_null_response:
+                # Parse retry-after time from error message (only for rate limit errors)
+                retry_after = None
+                if is_rate_limit:
+                    retry_match = re.search(r"retry after (\d+) seconds?", error_str, re.IGNORECASE)
+                    if not retry_match:
+                        retry_match = re.search(r"retry after (\d+) seconds?", error_repr, re.IGNORECASE)
+                    if not retry_match:
+                        retry_match = re.search(r"retry.*?(\d+).*?second", error_str, re.IGNORECASE)
+                    
+                    if retry_match:
+                        retry_after = int(retry_match.group(1))
                 
                 # Calculate wait time with exponential backoff and jitter
-                wait_time = max(retry_after, base_delay * (2 ** attempt))
+                # For rate limits, use retry_after as minimum; for null responses, use exponential backoff
+                exponential_delay = base_delay * (2 ** min(attempt, 6))  # Cap exponential growth at 2^6 = 64s
+                if retry_after is not None:
+                    wait_time = max(retry_after, exponential_delay)
+                else:
+                    # For null response errors, use exponential backoff with shorter initial delay
+                    wait_time = exponential_delay
+                
+                # Cap maximum wait time to prevent excessive delays
+                wait_time = min(wait_time, max_wait_time)
+                # Add jitter (±20%) to prevent thundering herd
                 jitter = wait_time * 0.2 * random.uniform(-1, 1)
                 wait_time = max(1, wait_time + jitter)
                 
                 if attempt < max_retries - 1:
-                    print(f"[RATE_LIMIT] HTTP 429 detected, waiting {wait_time:.1f}s before retry {attempt+1}/{max_retries}")
+                    error_type = "HTTP 429" if is_rate_limit else "Null response"
+                    print(f"[RETRY] {error_type} error detected, waiting {wait_time:.1f}s before retry {attempt+1}/{max_retries}")
+                    print(f"[RETRY] Error details: {error_str[:200]}...")  # Log first 200 chars of error
                     time.sleep(wait_time)
                     continue
                 else:
-                    print(f"[RATE_LIMIT] Max retries ({max_retries}) exceeded, raising exception")
+                    error_type = "Rate limit" if is_rate_limit else "Null response"
+                    print(f"[RETRY] Max retries ({max_retries}) exceeded for {error_type} error, raising exception")
+                    print(f"[RETRY] Final error: {error_str[:500]}...")  # Log first 500 chars of final error
                     raise
             
             # Re-raise non-rate-limit errors immediately
@@ -1383,7 +1462,7 @@ def generate_spec_full_name(spec_path, specAbbrName):
         "context": cortex_retriever,
     } | prompt | llm_spec_desc
 
-    specDesc = rag_chain.invoke(f"What are the processes and commands for {specAbbrName} for SSDs validation").content
+    specDesc = invoke_with_rate_limit_retry(rag_chain, f"What are the processes and commands for {specAbbrName} for SSDs validation").content
     return specDesc
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -1409,7 +1488,7 @@ def generate_spec_description(spec_path, specFullName):
         # "module": RunnablePassthrough(),
     } | prompt | llm_spec_desc
 
-    specDesc = rag_chain.invoke(f"What are the processes and commands for {specFullName} for SSDs validation").content
+    specDesc = invoke_with_rate_limit_retry(rag_chain, f"What are the processes and commands for {specFullName} for SSDs validation").content
     return specDesc
 
 # -------------------------------------------------------------------------------- NOTEBOOK-CELL: CODE
@@ -2210,6 +2289,14 @@ Output: Comma-separated list of relevant module names only.
     )
 
     content_index = state['content_index_pages']
+    
+    # Validate required keys exist
+    if not isinstance(content_index, dict):
+        raise ValueError(f"content_index_pages must be a dict, got {type(content_index)}")
+    if 'start_index_page' not in content_index:
+        raise KeyError(f"start_index_page missing in content_index_pages for {spec_full_path}. Available keys: {list(content_index.keys())}")
+    if 'end_index_page' not in content_index:
+        raise KeyError(f"end_index_page missing in content_index_pages for {spec_full_path}. Available keys: {list(content_index.keys())}")
 
     context = ""
     df_specName = df_sorted[
@@ -2219,7 +2306,7 @@ Output: Comma-separated list of relevant module names only.
     context += "\n".join(df_specName["text"].iloc[(content_index["start_index_page"] - 1):(content_index["end_index_page"])].tolist())
     context += "\n\n\n"
 
-    print(context)
+    print(f"[CONTEXT] {truncate_text_for_log(context, max_length=150)}")
 
     updated_modules = invoke_with_rate_limit_retry(rag_chain_w_retry, context)
 
@@ -2237,6 +2324,20 @@ def assign_workers_relevant_sections_extraction(state: ModuleContentState) -> Li
     print(f"----------{spec_missing_paths} Relevant Sections Missing Paths")
     final_output = []
     for spec_path in spec_missing_paths:
+        # Validate index pages exist and are complete
+        if spec_path not in spec_content_index:
+            print(f"[WARNING] Skipping {spec_path}: not found in content_index_pages")
+            continue
+        
+        index_pages = spec_content_index[spec_path]
+        if not isinstance(index_pages, dict):
+            print(f"[WARNING] Skipping {spec_path}: invalid index_pages format")
+            continue
+        
+        if 'start_index_page' not in index_pages or 'end_index_page' not in index_pages:
+            print(f"[WARNING] Skipping {spec_path}: incomplete index pages (has: {list(index_pages.keys())})")
+            continue
+        
         final_output.append(Send(
             "identify_relevant_spec_sections",
             {"spec_full_path": spec_path,
