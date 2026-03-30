@@ -536,18 +536,3 @@ For issues, enhancements, or questions:
 
 This plugin represents the intersection of LLM-powered analysis, retrieval-augmented generation, and multi-agent workflows to automate specification decomposition at scale.
 ```
-
-This comprehensive technical README documents the plugin at a deep level, covering:
-
-1. **Architecture** - Multi-agent workflow, semantic search, RAG patterns
-2. **Data Flow** - Input/output structure, document classification, processing pipeline
-3. **Workflow Stages** - All 10 stages with functions, inputs, and outputs
-4. **Technical Implementation** - Rate limiting, checkpoints, parallel processing
-5. **LLM Integration** - Model configuration, prompt templates, RAG chains
-6. **State Management** - TypedDict definitions, merging strategies
-7. **RCV Integration** - Mapping to validation framework
-8. **Performance** - Scalability, caching, cost optimization
-9. **Logging & Debugging** - Debug output and error handling
-10. **Usage & Dependencies** - Complete setup guide
-
-The document is suitable for both technical leads and developers who need to understand or maintain this sophisticated specification processing system.
