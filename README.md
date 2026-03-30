@@ -1,4 +1,4 @@
-# Dataiku Specification Decomposition Plugin Technical Documentation
+# Dataiku Specification Decomposition Plugin
 
 ## Overview
 The Dataiku Specification Decomposition Plugin provides a framework for analyzing and breaking down complex specifications into manageable components. This document serves as a comprehensive guide to understanding the architecture, workflow stages, LLM integration, and implementation details of the plugin.
