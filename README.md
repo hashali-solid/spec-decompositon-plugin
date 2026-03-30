@@ -535,4 +535,3 @@ For issues, enhancements, or questions:
 - **License:** Apache Software License
 
 This plugin represents the intersection of LLM-powered analysis, retrieval-augmented generation, and multi-agent workflows to automate specification decomposition at scale.
-```
